@@ -20,11 +20,14 @@ type Bounds struct {
 }
 
 // Candidate is worker output: bytes plus optional self-claim. Claims have no authority.
+// Evidence holds optional provider raw response bytes for provenance (never secrets).
 type Candidate struct {
-	Bytes      []byte
-	Producer   string
-	ClaimValid bool
-	ClaimNote  string
+	Bytes        []byte
+	Producer     string
+	ClaimValid   bool
+	ClaimNote    string
+	Evidence     []byte
+	EvidenceNote string // e.g. provider=openai model=... response_hash=...
 }
 
 // Verdict is an independent evaluation result.
@@ -123,7 +126,14 @@ func Execute(req RunRequest) (RunResult, error) {
 
 		cand, err := req.Propose(req.Objective, planHash)
 		if err != nil {
-			return RunResult{}, err
+			// Network/provider failure is a governed reject, not a fabricated success.
+			lastReject = "propose: " + err.Error()
+			if len(cand.Evidence) > 0 || cand.EvidenceNote != "" {
+				if evErr := recordProviderEvidence(st, log, criteriaHash, "", cand); evErr != nil {
+					return RunResult{}, evErr
+				}
+			}
+			continue
 		}
 		if cand.Producer == "" {
 			return RunResult{}, fmt.Errorf("propose: missing producer identity")
@@ -143,6 +153,9 @@ func Execute(req RunRequest) (RunResult, error) {
 			CriteriaHash: criteriaHash, ArtifactHash: candHash, Attempt: attempt,
 			Note: "propose",
 		}); err != nil {
+			return RunResult{}, err
+		}
+		if err := recordProviderEvidence(st, log, criteriaHash, candHash, cand); err != nil {
 			return RunResult{}, err
 		}
 
@@ -260,4 +273,28 @@ func finish(log *Log, criteriaHash, planHash, candidateHash, artifactHash, rejec
 		CandidateHash: candidateHash, ArtifactHash: artifactHash,
 		Projection: proj, Events: log.Events(), RejectReason: reject,
 	}, nil
+}
+
+func recordProviderEvidence(st store, log *Log, criteriaHash, candHash string, cand Candidate) error {
+	if len(cand.Evidence) == 0 && cand.EvidenceNote == "" {
+		return nil
+	}
+	var evidenceHash string
+	var err error
+	if len(cand.Evidence) > 0 {
+		evidenceHash, err = st.put(cand.Evidence)
+		if err != nil {
+			return err
+		}
+	}
+	actor := cand.Producer
+	if actor == "" {
+		actor = "worker/unknown"
+	}
+	_, err = log.append(Event{
+		Kind: kindProviderResponse, Actor: actor,
+		CriteriaHash: criteriaHash, ArtifactHash: candHash,
+		EvidenceHash: evidenceHash, Note: cand.EvidenceNote,
+	})
+	return err
 }

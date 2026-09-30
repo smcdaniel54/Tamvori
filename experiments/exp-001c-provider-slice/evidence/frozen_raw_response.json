@@ -1,0 +1,36 @@
+{
+  "id": "chatcmpl-ETtwSCkLa2ogsAkm6CRbjCrEOwVlu",
+  "object": "chat.completion",
+  "created": 1790795260,
+  "model": "gpt-4o-mini-2024-07-18",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\n  \"schema\": \"tamvori.media.production_package.v1\",\n  \"title\": \"Governed AI Generation for Operators\",\n  \"audience\": \"Media operators and AI governance stakeholders\",\n  \"message\": \"Showcasing the importance of governed AI generation in media production and its impact on operational efficiency and ethical standards.\",\n  \"scenes\": [\n    {\n      \"id\": \"scene-001\",\n      \"outline\": \"Introduction to AI generation in media production, highlighting the need for governance and ethical considerations.\"\n    },\n    {\n      \"id\": \"scene-002\",\n      \"outline\": \"Case studies of successful governed AI implementations in media, showcasing benefits and challenges.\"\n    },\n    {\n      \"id\": \"scene-003\",\n      \"outline\": \"Expert interviews discussing the future of AI in media and the importance of governance.\"\n    },\n    {\n      \"id\": \"scene-004\",\n      \"outline\": \"Conclusion summarizing key points and a call to action for operators to adopt governed AI practices.\"\n    }\n  ],\n  \"narration\": \"This production explores the critical role of governance in AI generation for media operators, emphasizing ethical standards and operational efficiency.\",\n  \"assets\": [\n    {\n      \"name\": \"\"\n    },\n    {\n      \"name\": \"\"\n    },\n    {\n      \"name\": \"\"\n    }\n  ]\n}",
+        "refusal": null,
+        "annotations": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 192,
+    "completion_tokens": 276,
+    "total_tokens": 468,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": "fp_01c4d84367"
+}

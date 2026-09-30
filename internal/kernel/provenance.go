@@ -13,11 +13,12 @@ const (
 	kindRunStarted   = "run_started"
 	kindPlanPinned   = "plan_pinned"
 	kindWorkerOutput = "worker_output"
-	kindClaim        = "claim"
-	kindVerdict      = "verdict"
-	kindRunAccepted  = "run_accepted"
-	kindRunRejected  = "run_rejected"
-	kindRetry        = "retry"
+	kindClaim            = "claim"
+	kindProviderResponse = "provider_response"
+	kindVerdict          = "verdict"
+	kindRunAccepted      = "run_accepted"
+	kindRunRejected      = "run_rejected"
+	kindRetry            = "retry"
 )
 
 // Event is one append-only provenance record.
@@ -157,8 +158,8 @@ func Fold(events []Event) Projection {
 		case kindWorkerOutput:
 			p.ArtifactHash = e.ArtifactHash
 			producerOf[e.ArtifactHash] = e.Actor
-		case kindClaim:
-			// Ignored for status.
+		case kindClaim, kindProviderResponse:
+			// Ignored for status. Provider evidence is audit-only.
 		case kindVerdict:
 			if e.ArtifactHash != "" {
 				if prod, ok := producerOf[e.ArtifactHash]; ok && prod == e.Actor {
