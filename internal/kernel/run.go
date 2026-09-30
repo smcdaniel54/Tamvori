@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // Objective is what a human wants. Criteria are pinned by hash at run start.
@@ -14,23 +13,18 @@ type Objective struct {
 	Text string
 }
 
-// Bounds are the only "policy" for this slice: immutable run data, not a framework.
+// Bounds are the only "policy" for this slice: immutable run data.
 type Bounds struct {
 	MaxAttempts int
 	MaxBytes    int
 }
 
-// Plan is ordered step names as data.
-type Plan struct {
-	Steps []string `json:"steps"`
-}
-
 // Candidate is worker output: bytes plus optional self-claim. Claims have no authority.
 type Candidate struct {
-	Bytes       []byte
-	Producer    string
-	ClaimValid  bool // worker self-report; ignored by Fold for acceptance
-	ClaimNote   string
+	Bytes      []byte
+	Producer   string
+	ClaimValid bool
+	ClaimNote  string
 }
 
 // Verdict is an independent evaluation result.
@@ -39,42 +33,32 @@ type Verdict struct {
 	ArtifactHash string
 	CriteriaHash string
 	Pass         bool
-	Evidence     []byte // optional evidence bytes stored as artifact
+	Evidence     []byte
 	Note         string
 }
-
-// VerifyFunc evaluates an artifact against pinned criteria bytes.
-// It must not be the producer identity.
-type VerifyFunc func(artifact []byte, criteria []byte, criteriaHash string) (Verdict, error)
-
-// TransformFunc is a deterministic worker: same input bytes -> same output bytes.
-type TransformFunc func(in []byte) ([]byte, error)
-
-// ProposeFunc is a generative-shaped worker (fixture in this experiment).
-type ProposeFunc func(objective Objective, planHash string) (Candidate, error)
 
 // RunRequest is everything required to execute one governed run.
 type RunRequest struct {
 	WorkDir      string
 	Objective    Objective
-	CriteriaJSON []byte // pinned; workers do not receive write access
+	CriteriaJSON []byte
 	Bounds       Bounds
-	Propose      ProposeFunc
-	Transform    TransformFunc
-	Verify       VerifyFunc
-	VerifierID   string // must differ from producer
+	Propose      func(Objective, string) (Candidate, error)
+	Transform    func([]byte) ([]byte, error)
+	Verify       func(artifact, criteria []byte, criteriaHash string) (Verdict, error)
+	VerifierID   string
 }
 
 // RunResult is the outcome of one governed run.
 type RunResult struct {
-	Status         string
-	CriteriaHash   string
-	PlanHash       string
-	CandidateHash  string
-	ArtifactHash   string
-	Projection     Projection
-	Events         []Event
-	RejectReason   string
+	Status        string
+	CriteriaHash  string
+	PlanHash      string
+	CandidateHash string
+	ArtifactHash  string
+	Projection    Projection
+	Events        []Event
+	RejectReason  string
 }
 
 // Execute runs one governed objective-to-artifact cycle.
@@ -89,52 +73,49 @@ func Execute(req RunRequest) (RunResult, error) {
 		return RunResult{}, err
 	}
 
-	store := Store{Dir: filepath.Join(req.WorkDir, "artifacts")}
-	logPath := filepath.Join(req.WorkDir, "provenance.jsonl")
-	log, err := OpenLog(logPath)
+	st := store{Dir: filepath.Join(req.WorkDir, "artifacts")}
+	log, err := OpenLog(filepath.Join(req.WorkDir, "provenance.jsonl"))
 	if err != nil {
 		return RunResult{}, err
 	}
 
 	criteriaHash := HashBytes(req.CriteriaJSON)
-	if _, err := store.Put(req.CriteriaJSON); err != nil {
+	if _, err := st.put(req.CriteriaJSON); err != nil {
 		return RunResult{}, err
 	}
 
-	if _, err := log.Append(Event{
-		Kind: EventRunStarted, Actor: "governor",
+	if _, err := log.append(Event{
+		Kind: kindRunStarted, Actor: "governor",
 		ObjectiveID: req.Objective.ID, CriteriaHash: criteriaHash,
 		Note: req.Objective.Text,
 	}); err != nil {
 		return RunResult{}, err
 	}
 
-	plan := Plan{Steps: []string{"propose", "transform", "verify"}}
-	planBytes, err := json.Marshal(plan)
+	planBytes, err := json.Marshal(map[string][]string{
+		"steps": {"propose", "transform", "verify"},
+	})
 	if err != nil {
 		return RunResult{}, err
 	}
-	planHash, err := store.Put(planBytes)
+	planHash, err := st.put(planBytes)
 	if err != nil {
 		return RunResult{}, err
 	}
-	if _, err := log.Append(Event{
-		Kind: EventPlanPinned, Actor: "governor",
+	if _, err := log.append(Event{
+		Kind: kindPlanPinned, Actor: "governor",
 		CriteriaHash: criteriaHash, PlanHash: planHash,
 	}); err != nil {
 		return RunResult{}, err
 	}
 
-	var lastReject string
-	var lastCandidateHash string
-	var lastArtifactHash string
+	var lastReject, lastCandidateHash, lastArtifactHash string
 
 	for attempt := 1; attempt <= req.Bounds.MaxAttempts; attempt++ {
 		if attempt > 1 {
-			if _, err := log.Append(Event{
-				Kind: EventRetry, Actor: "governor",
-				CriteriaHash: criteriaHash, Attempt: attempt,
-				Note: lastReject,
+			if _, err := log.append(Event{
+				Kind: kindRetry, Actor: "governor",
+				CriteriaHash: criteriaHash, Attempt: attempt, Note: lastReject,
 			}); err != nil {
 				return RunResult{}, err
 			}
@@ -152,13 +133,13 @@ func Execute(req RunRequest) (RunResult, error) {
 			continue
 		}
 
-		candHash, err := store.Put(cand.Bytes)
+		candHash, err := st.put(cand.Bytes)
 		if err != nil {
 			return RunResult{}, err
 		}
 		lastCandidateHash = candHash
-		if _, err := log.Append(Event{
-			Kind: EventWorkerOutput, Actor: cand.Producer,
+		if _, err := log.append(Event{
+			Kind: kindWorkerOutput, Actor: cand.Producer,
 			CriteriaHash: criteriaHash, ArtifactHash: candHash, Attempt: attempt,
 			Note: "propose",
 		}); err != nil {
@@ -166,14 +147,13 @@ func Execute(req RunRequest) (RunResult, error) {
 		}
 
 		if cand.ClaimValid || cand.ClaimNote != "" {
-			claim := map[string]any{"valid": cand.ClaimValid, "note": cand.ClaimNote}
-			claimBytes, _ := json.Marshal(claim)
-			claimHash, err := store.Put(claimBytes)
+			claimBytes, _ := json.Marshal(map[string]any{"valid": cand.ClaimValid, "note": cand.ClaimNote})
+			claimHash, err := st.put(claimBytes)
 			if err != nil {
 				return RunResult{}, err
 			}
-			if _, err := log.Append(Event{
-				Kind: EventClaim, Actor: cand.Producer,
+			if _, err := log.append(Event{
+				Kind: kindClaim, Actor: cand.Producer,
 				CriteriaHash: criteriaHash, ArtifactHash: candHash,
 				EvidenceHash: claimHash, Note: "worker self-claim",
 			}); err != nil {
@@ -184,8 +164,8 @@ func Execute(req RunRequest) (RunResult, error) {
 		out, err := req.Transform(cand.Bytes)
 		if err != nil {
 			lastReject = "transform: " + err.Error()
-			if _, err := log.Append(Event{
-				Kind: EventVerdict, Actor: req.VerifierID,
+			if _, err := log.append(Event{
+				Kind: kindVerdict, Actor: req.VerifierID,
 				CriteriaHash: criteriaHash, ArtifactHash: candHash,
 				Result: "fail", Attempt: attempt, Note: lastReject,
 			}); err != nil {
@@ -197,15 +177,15 @@ func Execute(req RunRequest) (RunResult, error) {
 			lastReject = "transformed artifact exceeds MaxBytes"
 			continue
 		}
-		artHash, err := store.Put(out)
+		artHash, err := st.put(out)
 		if err != nil {
 			return RunResult{}, err
 		}
 		lastArtifactHash = artHash
-		if _, err := log.Append(Event{
-			Kind: EventWorkerOutput, Actor: "worker/deterministic",
+		if _, err := log.append(Event{
+			Kind: kindWorkerOutput, Actor: "worker/deterministic",
 			CriteriaHash: criteriaHash, ArtifactHash: artHash, Attempt: attempt,
-			Note: "transform", Extra: map[string]string{"input": candHash},
+			Note: "transform input=" + candHash,
 		}); err != nil {
 			return RunResult{}, err
 		}
@@ -218,11 +198,9 @@ func Execute(req RunRequest) (RunResult, error) {
 			v.Evaluator = req.VerifierID
 		}
 		if v.Evaluator == cand.Producer {
-			// Hard rule: refuse to accept a same-identity verdict as authority.
-			// Record it; Fold will ignore it for acceptance. Treat as fail path.
 			lastReject = "verifier identity equals producer"
-			if _, err := log.Append(Event{
-				Kind: EventVerdict, Actor: v.Evaluator,
+			if _, err := log.append(Event{
+				Kind: kindVerdict, Actor: v.Evaluator,
 				CriteriaHash: criteriaHash, ArtifactHash: artHash,
 				Result: "fail", Attempt: attempt, Note: lastReject,
 			}); err != nil {
@@ -233,7 +211,7 @@ func Execute(req RunRequest) (RunResult, error) {
 
 		var evidenceHash string
 		if len(v.Evidence) > 0 {
-			evidenceHash, err = store.Put(v.Evidence)
+			evidenceHash, err = st.put(v.Evidence)
 			if err != nil {
 				return RunResult{}, err
 			}
@@ -242,8 +220,8 @@ func Execute(req RunRequest) (RunResult, error) {
 		if v.Pass {
 			result = "pass"
 		}
-		if _, err := log.Append(Event{
-			Kind: EventVerdict, Actor: v.Evaluator,
+		if _, err := log.append(Event{
+			Kind: kindVerdict, Actor: v.Evaluator,
 			CriteriaHash: criteriaHash, ArtifactHash: artHash,
 			Result: result, EvidenceHash: evidenceHash, Attempt: attempt, Note: v.Note,
 		}); err != nil {
@@ -251,18 +229,13 @@ func Execute(req RunRequest) (RunResult, error) {
 		}
 
 		if v.Pass {
-			if _, err := log.Append(Event{
-				Kind: EventRunAccepted, Actor: "governor",
+			if _, err := log.append(Event{
+				Kind: kindRunAccepted, Actor: "governor",
 				CriteriaHash: criteriaHash, ArtifactHash: artHash,
 			}); err != nil {
 				return RunResult{}, err
 			}
-			proj := Fold(log.Events())
-			return RunResult{
-				Status: proj.Status, CriteriaHash: criteriaHash, PlanHash: planHash,
-				CandidateHash: lastCandidateHash, ArtifactHash: artHash,
-				Projection: proj, Events: log.Events(),
-			}, nil
+			return finish(log, criteriaHash, planHash, lastCandidateHash, artHash, "")
 		}
 		lastReject = v.Note
 		if lastReject == "" {
@@ -270,35 +243,21 @@ func Execute(req RunRequest) (RunResult, error) {
 		}
 	}
 
-	if _, err := log.Append(Event{
-		Kind: EventRunRejected, Actor: "governor",
+	if _, err := log.append(Event{
+		Kind: kindRunRejected, Actor: "governor",
 		CriteriaHash: criteriaHash, ArtifactHash: lastArtifactHash,
 		Note: lastReject,
 	}); err != nil {
 		return RunResult{}, err
 	}
+	return finish(log, criteriaHash, planHash, lastCandidateHash, lastArtifactHash, lastReject)
+}
+
+func finish(log *Log, criteriaHash, planHash, candidateHash, artifactHash, reject string) (RunResult, error) {
 	proj := Fold(log.Events())
 	return RunResult{
 		Status: proj.Status, CriteriaHash: criteriaHash, PlanHash: planHash,
-		CandidateHash: lastCandidateHash, ArtifactHash: lastArtifactHash,
-		Projection: proj, Events: log.Events(), RejectReason: lastReject,
+		CandidateHash: candidateHash, ArtifactHash: artifactHash,
+		Projection: proj, Events: log.Events(), RejectReason: reject,
 	}, nil
-}
-
-// CriteriaHashOf returns HashBytes(criteria) for tests and CLI.
-func CriteriaHashOf(criteria []byte) string { return HashBytes(criteria) }
-
-// UnderDir reports whether writePath is inside dir (workers must not write criteria dirs).
-func UnderDir(dir, writePath string) bool {
-	absDir, err1 := filepath.Abs(dir)
-	absPath, err2 := filepath.Abs(writePath)
-	if err1 != nil || err2 != nil {
-		return false
-	}
-	sep := string(filepath.Separator)
-	prefix := absDir
-	if !strings.HasSuffix(prefix, sep) {
-		prefix += sep
-	}
-	return absPath == absDir || strings.HasPrefix(absPath, prefix)
 }

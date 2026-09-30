@@ -3,7 +3,6 @@ package kernel
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -14,17 +13,16 @@ func HashBytes(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Store is a local content-addressed artifact directory.
-// Files are named by their content hash. No registry, no interface.
-type Store struct {
+// store is a local content-addressed artifact directory.
+type store struct {
 	Dir string
 }
 
-func (s Store) Put(b []byte) (hash string, err error) {
+func (s store) put(b []byte) (string, error) {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return "", err
 	}
-	hash = HashBytes(b)
+	hash := HashBytes(b)
 	path := filepath.Join(s.Dir, hash)
 	if _, err := os.Stat(path); err == nil {
 		return hash, nil
@@ -38,15 +36,4 @@ func (s Store) Put(b []byte) (hash string, err error) {
 		return "", err
 	}
 	return hash, nil
-}
-
-func (s Store) Get(hash string) ([]byte, error) {
-	b, err := os.ReadFile(filepath.Join(s.Dir, hash))
-	if err != nil {
-		return nil, fmt.Errorf("artifact %s: %w", hash, err)
-	}
-	if got := HashBytes(b); got != hash {
-		return nil, fmt.Errorf("artifact %s: bytes hash to %s", hash, got)
-	}
-	return b, nil
 }

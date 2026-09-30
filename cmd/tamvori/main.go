@@ -24,7 +24,7 @@ func main() {
 			if i >= len(os.Args) {
 				fatal("missing --fixture value")
 			}
-			fixture = media.FixtureMode(os.Args[i])
+			fixture = os.Args[i]
 		case "--workdir":
 			i++
 			if i >= len(os.Args) {

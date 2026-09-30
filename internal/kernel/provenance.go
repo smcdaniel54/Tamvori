@@ -8,61 +8,39 @@ import (
 	"strings"
 )
 
-// Event kinds for the append-only provenance log.
+// Event kinds (private). External checks compare Event.Kind string values.
 const (
-	EventRunStarted       = "run_started"
-	EventPlanPinned       = "plan_pinned"
-	EventWorkerOutput     = "worker_output"
-	EventClaim            = "claim"
-	EventVerdict          = "verdict"
-	EventRunAccepted      = "run_accepted"
-	EventRunRejected      = "run_rejected"
-	EventRetry            = "retry"
+	kindRunStarted   = "run_started"
+	kindPlanPinned   = "plan_pinned"
+	kindWorkerOutput = "worker_output"
+	kindClaim        = "claim"
+	kindVerdict      = "verdict"
+	kindRunAccepted  = "run_accepted"
+	kindRunRejected  = "run_rejected"
+	kindRetry        = "retry"
 )
 
 // Event is one append-only provenance record.
 type Event struct {
-	Seq           int               `json:"seq"`
-	PrevHash      string            `json:"prev_hash"`
-	EventHash     string            `json:"event_hash"`
-	Kind          string            `json:"kind"`
-	Actor         string            `json:"actor"`
-	ObjectiveID   string            `json:"objective_id,omitempty"`
-	CriteriaHash  string            `json:"criteria_hash,omitempty"`
-	PlanHash      string            `json:"plan_hash,omitempty"`
-	ArtifactHash  string            `json:"artifact_hash,omitempty"`
-	Result        string            `json:"result,omitempty"` // pass|fail for verdicts
-	EvidenceHash  string            `json:"evidence_hash,omitempty"`
-	Attempt       int               `json:"attempt,omitempty"`
-	Note          string            `json:"note,omitempty"`
-	Extra         map[string]string `json:"extra,omitempty"`
-}
-
-// eventBody is the portion hashed into EventHash (excludes EventHash itself).
-type eventBody struct {
-	Seq          int               `json:"seq"`
-	PrevHash     string            `json:"prev_hash"`
-	Kind         string            `json:"kind"`
-	Actor        string            `json:"actor"`
-	ObjectiveID  string            `json:"objective_id,omitempty"`
-	CriteriaHash string            `json:"criteria_hash,omitempty"`
-	PlanHash     string            `json:"plan_hash,omitempty"`
-	ArtifactHash string            `json:"artifact_hash,omitempty"`
-	Result       string            `json:"result,omitempty"`
-	EvidenceHash string            `json:"evidence_hash,omitempty"`
-	Attempt      int               `json:"attempt,omitempty"`
-	Note         string            `json:"note,omitempty"`
-	Extra        map[string]string `json:"extra,omitempty"`
+	Seq          int    `json:"seq"`
+	PrevHash     string `json:"prev_hash"`
+	EventHash    string `json:"event_hash,omitempty"`
+	Kind         string `json:"kind"`
+	Actor        string `json:"actor"`
+	ObjectiveID  string `json:"objective_id,omitempty"`
+	CriteriaHash string `json:"criteria_hash,omitempty"`
+	PlanHash     string `json:"plan_hash,omitempty"`
+	ArtifactHash string `json:"artifact_hash,omitempty"`
+	Result       string `json:"result,omitempty"` // pass|fail for verdicts
+	EvidenceHash string `json:"evidence_hash,omitempty"`
+	Attempt      int    `json:"attempt,omitempty"`
+	Note         string `json:"note,omitempty"`
 }
 
 func (e Event) bodyHash() (string, error) {
-	b := eventBody{
-		Seq: e.Seq, PrevHash: e.PrevHash, Kind: e.Kind, Actor: e.Actor,
-		ObjectiveID: e.ObjectiveID, CriteriaHash: e.CriteriaHash, PlanHash: e.PlanHash,
-		ArtifactHash: e.ArtifactHash, Result: e.Result, EvidenceHash: e.EvidenceHash,
-		Attempt: e.Attempt, Note: e.Note, Extra: e.Extra,
-	}
-	raw, err := json.Marshal(b)
+	cp := e
+	cp.EventHash = ""
+	raw, err := json.Marshal(cp)
 	if err != nil {
 		return "", err
 	}
@@ -75,6 +53,7 @@ type Log struct {
 	events []Event
 }
 
+// OpenLog reads and verifies an existing provenance log, or returns empty.
 func OpenLog(path string) (*Log, error) {
 	l := &Log{Path: path}
 	f, err := os.Open(path)
@@ -86,7 +65,6 @@ func OpenLog(path string) (*Log, error) {
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
-	// Increase buffer for long lines.
 	buf := make([]byte, 0, 64*1024)
 	sc.Buffer(buf, 1024*1024)
 	var prev string
@@ -118,13 +96,14 @@ func OpenLog(path string) (*Log, error) {
 	return l, nil
 }
 
+// Events returns a copy of the log.
 func (l *Log) Events() []Event {
 	out := make([]Event, len(l.events))
 	copy(out, l.events)
 	return out
 }
 
-func (l *Log) Append(e Event) (Event, error) {
+func (l *Log) append(e Event) (Event, error) {
 	e.Seq = len(l.events) + 1
 	if len(l.events) == 0 {
 		e.PrevHash = ""
@@ -159,8 +138,6 @@ type Projection struct {
 	CriteriaHash string
 	PlanHash     string
 	ArtifactHash string
-	LastVerdict  string
-	LastActor    string
 }
 
 // Fold recomputes status from events. Pure: no I/O.
@@ -171,23 +148,20 @@ func Fold(events []Event) Projection {
 	producerOf := map[string]string{} // artifact hash -> actor
 	for _, e := range events {
 		switch e.Kind {
-		case EventRunStarted:
+		case kindRunStarted:
 			p.ObjectiveID = e.ObjectiveID
 			p.CriteriaHash = e.CriteriaHash
 			p.Status = "executing"
-		case EventPlanPinned:
+		case kindPlanPinned:
 			p.PlanHash = e.PlanHash
-		case EventWorkerOutput:
+		case kindWorkerOutput:
 			p.ArtifactHash = e.ArtifactHash
 			producerOf[e.ArtifactHash] = e.Actor
-		case EventClaim:
+		case kindClaim:
 			// Ignored for status.
-		case EventVerdict:
-			p.LastVerdict = e.Result
-			p.LastActor = e.Actor
+		case kindVerdict:
 			if e.ArtifactHash != "" {
 				if prod, ok := producerOf[e.ArtifactHash]; ok && prod == e.Actor {
-					// Same identity: ignore for acceptance.
 					continue
 				}
 			}
@@ -200,12 +174,12 @@ func Fold(events []Event) Projection {
 			} else if e.Result == "fail" {
 				p.Status = "rejected"
 			}
-		case EventRunAccepted:
+		case kindRunAccepted:
 			p.Status = "accepted"
 			if e.ArtifactHash != "" {
 				p.ArtifactHash = e.ArtifactHash
 			}
-		case EventRunRejected:
+		case kindRunRejected:
 			p.Status = "rejected"
 		}
 	}

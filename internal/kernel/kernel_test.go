@@ -13,7 +13,6 @@ import (
 
 func loadCriteria(t *testing.T) []byte {
 	t.Helper()
-	// Walk up from this test file's module root.
 	path := filepath.Join("..", "..", "experiments", "exp-001b-kernel-slice", "acceptance", "criteria.json")
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -22,7 +21,7 @@ func loadCriteria(t *testing.T) []byte {
 	return b
 }
 
-func runWith(t *testing.T, mode media.FixtureMode, dir string) kernel.RunResult {
+func runWith(t *testing.T, mode string, dir string) kernel.RunResult {
 	t.Helper()
 	res, err := kernel.Execute(kernel.RunRequest{
 		WorkDir:      dir,
@@ -40,9 +39,22 @@ func runWith(t *testing.T, mode media.FixtureMode, dir string) kernel.RunResult 
 	return res
 }
 
+func underDir(dir, writePath string) bool {
+	absDir, err1 := filepath.Abs(dir)
+	absPath, err2 := filepath.Abs(writePath)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	sep := string(filepath.Separator)
+	prefix := absDir
+	if !strings.HasSuffix(prefix, sep) {
+		prefix += sep
+	}
+	return absPath == absDir || strings.HasPrefix(absPath, prefix)
+}
+
 func TestValidRunAccepted(t *testing.T) {
-	dir := t.TempDir()
-	res := runWith(t, media.FixtureValid, dir)
+	res := runWith(t, media.FixtureValid, t.TempDir())
 	if res.Status != "accepted" {
 		t.Fatalf("status=%s reason=%s", res.Status, res.RejectReason)
 	}
@@ -51,7 +63,7 @@ func TestValidRunAccepted(t *testing.T) {
 	}
 	var sawVerdictPass bool
 	for _, e := range res.Events {
-		if e.Kind == kernel.EventVerdict && e.Result == "pass" {
+		if e.Kind == "verdict" && e.Result == "pass" {
 			if e.Actor == media.ProducerID {
 				t.Fatal("pass verdict from producer")
 			}
@@ -80,7 +92,7 @@ func TestWorkerSelfApprovalIgnored(t *testing.T) {
 	}
 	var sawClaim bool
 	for _, e := range res.Events {
-		if e.Kind == kernel.EventClaim {
+		if e.Kind == "claim" {
 			sawClaim = true
 		}
 	}
@@ -94,7 +106,7 @@ func TestWorkerSelfApprovalIgnored(t *testing.T) {
 
 func TestPinnedCriteriaImmutable(t *testing.T) {
 	criteria := loadCriteria(t)
-	pinned := kernel.CriteriaHashOf(criteria)
+	pinned := kernel.HashBytes(criteria)
 	dir := t.TempDir()
 	acceptance := filepath.Join(dir, "acceptance")
 	if err := os.MkdirAll(acceptance, 0o755); err != nil {
@@ -105,19 +117,16 @@ func TestPinnedCriteriaImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Simulate a worker attempting to write the acceptance directory.
 	workerWrite := filepath.Join(acceptance, "hacked.json")
-	if !kernel.UnderDir(acceptance, workerWrite) {
+	if !underDir(acceptance, workerWrite) {
 		t.Fatal("expected worker write path under acceptance dir")
 	}
-	// Policy: refuse. Criteria used for the run are the in-memory pinned bytes.
 	res, err := kernel.Execute(kernel.RunRequest{
 		WorkDir:      filepath.Join(dir, "run"),
 		Objective:    kernel.Objective{ID: "obj-pin", Text: "pin test"},
-		CriteriaJSON: criteria, // pinned copy, not re-read from disk after mutation
+		CriteriaJSON: criteria,
 		Bounds:       kernel.Bounds{MaxAttempts: 1, MaxBytes: 1 << 20},
 		Propose: func(obj kernel.Objective, planHash string) (kernel.Candidate, error) {
-			// Attempt to alter on-disk criteria during propose.
 			_ = os.WriteFile(critPath, []byte(`{"schema":"tampered","required_fields":[]}`), 0o644)
 			return media.Propose(media.FixtureValid)(obj, planHash)
 		},
@@ -132,7 +141,7 @@ func TestPinnedCriteriaImmutable(t *testing.T) {
 		t.Fatalf("criteria hash changed: got %s want %s", res.CriteriaHash, pinned)
 	}
 	disk, _ := os.ReadFile(critPath)
-	if kernel.CriteriaHashOf(disk) == pinned {
+	if kernel.HashBytes(disk) == pinned {
 		t.Fatal("expected on-disk criteria to be tampered for the test setup")
 	}
 	if res.Status != "accepted" {
@@ -155,24 +164,23 @@ func TestReplaySameArtifactHash(t *testing.T) {
 }
 
 func TestContentAddressChangesWithBytes(t *testing.T) {
-	store := kernel.Store{Dir: t.TempDir()}
-	h1, err := store.Put([]byte(`{"a":1}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	h2, err := store.Put([]byte(`{"a":2}`))
-	if err != nil {
-		t.Fatal(err)
-	}
+	h1 := kernel.HashBytes([]byte(`{"a":1}`))
+	h2 := kernel.HashBytes([]byte(`{"a":2}`))
 	if h1 == h2 {
 		t.Fatal("different bytes must different hashes")
 	}
-	h1b, err := store.Put([]byte(`{"a":1}`))
+	if h1 != kernel.HashBytes([]byte(`{"a":1}`)) {
+		t.Fatal("same bytes must same hash")
+	}
+	dir := t.TempDir()
+	res := runWith(t, media.FixtureValid, dir)
+	stored := filepath.Join(dir, "artifacts", res.ArtifactHash)
+	b, err := os.ReadFile(stored)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h1 != h1b {
-		t.Fatal("same bytes must same hash")
+	if kernel.HashBytes(b) != res.ArtifactHash {
+		t.Fatal("stored artifact hash mismatch")
 	}
 }
 
@@ -195,16 +203,17 @@ func TestDeterministicTransform(t *testing.T) {
 	if kernel.HashBytes(o1) != kernel.HashBytes(o2) {
 		t.Fatal("hash mismatch")
 	}
-	var pkg media.ProductionPackage
+	var pkg struct {
+		Scenes []struct {
+			ID string `json:"id"`
+		} `json:"scenes"`
+	}
 	if err := json.Unmarshal(o1, &pkg); err != nil {
 		t.Fatal(err)
 	}
-	if len(pkg.Scenes) < 2 || pkg.Scenes[0].ID > pkg.Scenes[1].ID {
-		// sorted ascending
-		for i := 1; i < len(pkg.Scenes); i++ {
-			if pkg.Scenes[i-1].ID > pkg.Scenes[i].ID {
-				t.Fatal("scenes not sorted")
-			}
+	for i := 1; i < len(pkg.Scenes); i++ {
+		if pkg.Scenes[i-1].ID > pkg.Scenes[i].ID {
+			t.Fatal("scenes not sorted")
 		}
 	}
 }
@@ -212,17 +221,17 @@ func TestDeterministicTransform(t *testing.T) {
 func TestProvenanceCapturesEvidence(t *testing.T) {
 	res := runWith(t, media.FixtureValid, t.TempDir())
 	need := map[string]bool{
-		kernel.EventRunStarted:  false,
-		kernel.EventPlanPinned:  false,
-		kernel.EventWorkerOutput: false,
-		kernel.EventVerdict:     false,
-		kernel.EventRunAccepted: false,
+		"run_started":   false,
+		"plan_pinned":   false,
+		"worker_output": false,
+		"verdict":       false,
+		"run_accepted":  false,
 	}
 	for _, e := range res.Events {
 		if _, ok := need[e.Kind]; ok {
 			need[e.Kind] = true
 		}
-		if e.Kind == kernel.EventRunStarted && (e.ObjectiveID == "" || e.CriteriaHash == "") {
+		if e.Kind == "run_started" && (e.ObjectiveID == "" || e.CriteriaHash == "") {
 			t.Fatal("run_started missing objective/criteria")
 		}
 	}
@@ -231,7 +240,6 @@ func TestProvenanceCapturesEvidence(t *testing.T) {
 			t.Fatalf("missing event kind %s", k)
 		}
 	}
-	// Refold must match.
 	proj := kernel.Fold(res.Events)
 	if proj.Status != res.Status {
 		t.Fatalf("refold %s vs %s", proj.Status, res.Status)
@@ -250,7 +258,6 @@ func TestHashChainDetectsTamper(t *testing.T) {
 	if len(lines) < 2 {
 		t.Fatal("expected multiple events")
 	}
-	// Tamper middle line.
 	lines[1] = lines[1][:len(lines[1])-1] + "X"
 	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -262,9 +269,9 @@ func TestHashChainDetectsTamper(t *testing.T) {
 
 func TestSameIdentityVerdictIgnoredByFold(t *testing.T) {
 	events := []kernel.Event{
-		{Kind: kernel.EventRunStarted, ObjectiveID: "o", CriteriaHash: "c"},
-		{Kind: kernel.EventWorkerOutput, Actor: media.ProducerID, ArtifactHash: "a1"},
-		{Kind: kernel.EventVerdict, Actor: media.ProducerID, ArtifactHash: "a1", CriteriaHash: "c", Result: "pass"},
+		{Kind: "run_started", ObjectiveID: "o", CriteriaHash: "c"},
+		{Kind: "worker_output", Actor: media.ProducerID, ArtifactHash: "a1"},
+		{Kind: "verdict", Actor: media.ProducerID, ArtifactHash: "a1", CriteriaHash: "c", Result: "pass"},
 	}
 	p := kernel.Fold(events)
 	if p.Status == "accepted" {
@@ -275,7 +282,6 @@ func TestSameIdentityVerdictIgnoredByFold(t *testing.T) {
 func TestMediaFieldsAbsentFromKernelSources(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
-		// tests run with cwd = package dir
 		t.Fatal(err)
 	}
 	forbidden := []string{"ProductionPackage", "narration", "audience", "Scenes", "FFmpeg", "timeline"}
