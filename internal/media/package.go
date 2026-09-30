@@ -45,12 +45,15 @@ type productionPackage struct {
 }
 
 type criteria struct {
-	RequiredFields      []string `json:"required_fields"`
-	RequireSortedScenes bool     `json:"require_sorted_scenes"`
-	RequireSortedAssets bool     `json:"require_sorted_assets"`
-	RequireAssetHashes  bool     `json:"require_asset_hashes"`
-	MinScenes           int      `json:"min_scenes"`
-	ForbiddenTitles     []string `json:"forbidden_titles"`
+	RequiredFields              []string `json:"required_fields"`
+	RequireSortedScenes         bool     `json:"require_sorted_scenes"`
+	RequireSortedAssets         bool     `json:"require_sorted_assets"`
+	RequireAssetHashes          bool     `json:"require_asset_hashes"`
+	RequireNonemptyAssetNames   bool     `json:"require_nonempty_asset_names"`
+	RequireNonemptySceneIDs     bool     `json:"require_nonempty_scene_ids"`
+	RequireNonemptySceneOutlines bool    `json:"require_nonempty_scene_outlines"`
+	MinScenes                   int      `json:"min_scenes"`
+	ForbiddenTitles             []string `json:"forbidden_titles"`
 }
 
 // Propose returns a generative-shaped candidate. It does not see criteria bytes.
@@ -115,15 +118,30 @@ func Transform(in []byte) ([]byte, error) {
 	if err := json.Unmarshal(in, &pkg); err != nil {
 		return nil, fmt.Errorf("candidate schema decode: %w", err)
 	}
-	if pkg.Schema == "" {
-		pkg.Schema = schemaID
-	}
+	normalizePackage(&pkg)
 	sort.Slice(pkg.Scenes, func(i, j int) bool { return pkg.Scenes[i].ID < pkg.Scenes[j].ID })
 	sort.Slice(pkg.Assets, func(i, j int) bool { return pkg.Assets[i].Name < pkg.Assets[j].Name })
 	for i := range pkg.Assets {
 		pkg.Assets[i].Hash = kernel.HashBytes([]byte(pkg.Title + "|" + pkg.Assets[i].Name))
 	}
 	return json.Marshal(pkg)
+}
+
+func normalizePackage(pkg *productionPackage) {
+	if pkg.Schema == "" {
+		pkg.Schema = schemaID
+	}
+	pkg.Title = strings.TrimSpace(pkg.Title)
+	pkg.Audience = strings.TrimSpace(pkg.Audience)
+	pkg.Message = strings.TrimSpace(pkg.Message)
+	pkg.Narration = strings.TrimSpace(pkg.Narration)
+	for i := range pkg.Scenes {
+		pkg.Scenes[i].ID = strings.TrimSpace(pkg.Scenes[i].ID)
+		pkg.Scenes[i].Outline = strings.TrimSpace(pkg.Scenes[i].Outline)
+	}
+	for i := range pkg.Assets {
+		pkg.Assets[i].Name = strings.TrimSpace(pkg.Assets[i].Name)
+	}
 }
 
 // Verify checks the transformed artifact against pinned criteria JSON.
@@ -150,11 +168,11 @@ func Verify(artifact, criteriaJSON []byte, criteriaHash string) (kernel.Verdict,
 		failures = append(failures, "schema mismatch")
 	}
 	fieldEmpty := map[string]bool{
-		"title":     strings.TrimSpace(pkg.Title) == "",
-		"audience":  strings.TrimSpace(pkg.Audience) == "",
-		"message":   strings.TrimSpace(pkg.Message) == "",
+		"title":     pkg.Title == "",
+		"audience":  pkg.Audience == "",
+		"message":   pkg.Message == "",
 		"scenes":    len(pkg.Scenes) == 0,
-		"narration": strings.TrimSpace(pkg.Narration) == "",
+		"narration": pkg.Narration == "",
 		"assets":    len(pkg.Assets) == 0,
 	}
 	for _, f := range crit.RequiredFields {
@@ -164,6 +182,30 @@ func Verify(artifact, criteriaJSON []byte, criteriaHash string) (kernel.Verdict,
 	}
 	if crit.MinScenes > 0 && len(pkg.Scenes) < crit.MinScenes {
 		failures = append(failures, "too few scenes")
+	}
+	if crit.RequireNonemptySceneIDs {
+		for _, s := range pkg.Scenes {
+			if s.ID == "" {
+				failures = append(failures, "empty scene id")
+				break
+			}
+		}
+	}
+	if crit.RequireNonemptySceneOutlines {
+		for _, s := range pkg.Scenes {
+			if s.Outline == "" {
+				failures = append(failures, "empty scene outline")
+				break
+			}
+		}
+	}
+	if crit.RequireNonemptyAssetNames {
+		for _, a := range pkg.Assets {
+			if a.Name == "" {
+				failures = append(failures, "empty asset name")
+				break
+			}
+		}
 	}
 	if crit.RequireSortedScenes {
 		for i := 1; i < len(pkg.Scenes); i++ {

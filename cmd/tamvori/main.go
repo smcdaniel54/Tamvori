@@ -47,7 +47,7 @@ func main() {
 		}
 	}
 
-	criteriaPath := filepath.Join("experiments", "exp-001b-kernel-slice", "acceptance", "criteria.json")
+	criteriaPath := filepath.Join("acceptance", "media-package.json")
 	criteria, err := os.ReadFile(criteriaPath)
 	if err != nil {
 		fatal(err.Error())

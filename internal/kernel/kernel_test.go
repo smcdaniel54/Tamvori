@@ -13,7 +13,7 @@ import (
 
 func loadCriteria(t *testing.T) []byte {
 	t.Helper()
-	path := filepath.Join("..", "..", "experiments", "exp-001b-kernel-slice", "acceptance", "criteria.json")
+	path := filepath.Join("..", "..", "acceptance", "media-package.json")
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read criteria: %v", err)

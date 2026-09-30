@@ -1,0 +1,12 @@
+{
+  "schema": "tamvori.media.production_package.v1",
+  "required_fields": ["title", "audience", "message", "scenes", "narration", "assets"],
+  "require_sorted_scenes": true,
+  "require_sorted_assets": true,
+  "require_asset_hashes": true,
+  "require_nonempty_asset_names": true,
+  "require_nonempty_scene_ids": true,
+  "require_nonempty_scene_outlines": true,
+  "min_scenes": 1,
+  "forbidden_titles": ["broken"]
+}

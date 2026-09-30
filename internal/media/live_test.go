@@ -18,7 +18,7 @@ import (
 
 func criteria(t *testing.T) []byte {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join("..", "..", "experiments", "exp-001b-kernel-slice", "acceptance", "criteria.json"))
+	b, err := os.ReadFile(filepath.Join("..", "..", "acceptance", "media-package.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,11 +212,12 @@ func TestCapturedLiveEvidenceReplays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Status != "accepted" {
-		t.Fatalf("status=%s reason=%s", a.Status, a.RejectReason)
+	// Historical EXP-001C live package used empty asset names; hardened criteria reject it.
+	if a.Status == "accepted" {
+		t.Fatal("frozen 001C live response must no longer be accepted under nonempty asset-name criteria")
 	}
-	if a.ArtifactHash != "cec62e13562a66a5a97920e10c4f697ef1f47ca6cf3962cf9ecae69d7cbc8469" {
-		t.Fatalf("unexpected artifact hash %s", a.ArtifactHash)
+	if !strings.Contains(a.RejectReason, "empty asset name") {
+		t.Fatalf("expected empty asset name rejection, got %q", a.RejectReason)
 	}
 	b, err := kernel.Execute(kernel.RunRequest{
 		WorkDir: t.TempDir(), Objective: kernel.Objective{ID: "capture", Text: "t"},
@@ -227,8 +228,8 @@ func TestCapturedLiveEvidenceReplays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.ArtifactHash != b.ArtifactHash {
-		t.Fatal("captured live evidence replay mismatch")
+	if a.Status != b.Status || a.RejectReason != b.RejectReason {
+		t.Fatal("captured live evidence rejection must replay deterministically")
 	}
 }
 
