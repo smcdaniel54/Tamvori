@@ -1,0 +1,6 @@
+# EXP-001D local binary evidence (not committed by default)
+evidence/**/*.mp4
+evidence/**/font.ttf
+evidence/**/scenes/
+evidence/**/concat.txt
+evidence/render-run-*/
