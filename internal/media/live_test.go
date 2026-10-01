@@ -233,6 +233,45 @@ func TestCapturedLiveEvidenceReplays(t *testing.T) {
 	}
 }
 
+func TestC3SuccessfulLiveEvidenceReplays(t *testing.T) {
+	assistant, err := os.ReadFile(filepath.Join("..", "..", "experiments", "exp-001c3-live-regression", "evidence", "frozen_assistant.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join("..", "..", "experiments", "exp-001c3-live-regression", "evidence", "frozen_raw_response.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wantHash = "b16800608182234c09ede3678ac3f094f41824e4c295098bdc452ef2883038bb"
+	a, err := kernel.Execute(kernel.RunRequest{
+		WorkDir: t.TempDir(), Objective: kernel.Objective{ID: "c3", Text: "t"},
+		CriteriaJSON: criteria(t), Bounds: kernel.Bounds{MaxAttempts: 1, MaxBytes: 1 << 20},
+		Propose: media.ProposeFrozen(assistant, "gpt-4o-mini", raw),
+		Transform: media.Transform, Verify: media.Verify, VerifierID: media.VerifierID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Status != "accepted" {
+		t.Fatalf("status=%s reason=%s", a.Status, a.RejectReason)
+	}
+	if a.ArtifactHash != wantHash {
+		t.Fatalf("artifact hash %s want %s", a.ArtifactHash, wantHash)
+	}
+	b, err := kernel.Execute(kernel.RunRequest{
+		WorkDir: t.TempDir(), Objective: kernel.Objective{ID: "c3", Text: "t"},
+		CriteriaJSON: criteria(t), Bounds: kernel.Bounds{MaxAttempts: 1, MaxBytes: 1 << 20},
+		Propose: media.ProposeFrozen(assistant, "gpt-4o-mini", raw),
+		Transform: media.Transform, Verify: media.Verify, VerifierID: media.VerifierID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ArtifactHash != b.ArtifactHash {
+		t.Fatal("C3 frozen live response replay mismatch")
+	}
+}
+
 func TestLiveTimeoutGovernedReject(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(300 * time.Millisecond)

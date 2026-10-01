@@ -22,8 +22,11 @@ const liveSystem = `You draft a Tamvori media production package candidate as JS
 Return one JSON object with exactly these keys:
 schema, title, audience, message, scenes, narration, assets.
 schema must be "tamvori.media.production_package.v1".
-scenes is an array of objects with id and outline (at least one).
-assets is an array of objects with name (hash may be empty string).
+Hard requirements (deterministic verifier will reject otherwise):
+- title, audience, message, and narration must be non-empty after trimming whitespace
+- scenes must contain at least one object; each scene id and outline must be non-empty after trim
+- assets must contain at least one object; each asset name must be a non-empty meaningful identifier after trim (for example "a-roll", not "")
+- asset hash may be an empty string; do not invent verification claims
 Do not include valid/passed/approved/score/confidence fields.
 Do not claim the package is accepted.`
 
